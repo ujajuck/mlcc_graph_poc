@@ -1,0 +1,38 @@
+# 대용량 데이터
+*.csv
+*.parquet
+*.zip
+*.tar.gz
+
+# 캐시
+.cache/
+__pycache__/
+
+# Python 캐시 및 바이너리
+*.pyc
+*.pyo
+*.pyd
+*.pt
+*.bin
+
+# 로그
+*.log
+
+# Graphify / LightRAG 출력물
+graphify-out/
+output/
+
+# HTML 결과물
+*.html
+
+# 임시 파일
+tmp/
+temp/
+
+# OS 파일
+.DS_Store
+Thumbs.db
+
+# 가상환경
+venv/
+.env/

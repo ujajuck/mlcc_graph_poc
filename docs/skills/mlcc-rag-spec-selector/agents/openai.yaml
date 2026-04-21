@@ -1,0 +1,4 @@
+interface:
+  display_name: "삼성 MLCC RAG 셀렉터"
+  short_description: "SEMCO 카탈로그 + 활성 라인업 축소"
+  default_prompt: "$mlcc-rag-spec-selector를 사용해 한국어/영어 고객 MLCC 요구사항을 카탈로그 기반 후보, 부분 chip_prod_id 패턴, 활성 라인업 히트, 검증 포인트로 변환하세요."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MLCC DOE 최적설계"
+  short_description: "Reference LOT 기반 DOE 최적설계 시뮬레이션"
+  default_prompt: "$mlcc-optimal-design-doe를 사용해 기준 lot을 검증하고, 누락된 targets/params를 수집한 뒤 optimal_design을 실행하며, 결과 후보를 바탕으로 한국어 대화를 이어가세요."
