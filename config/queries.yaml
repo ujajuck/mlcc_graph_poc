@@ -1,0 +1,37 @@
+# Shared query set for comparing pipeline A and B.
+# Both pipelines MUST be evaluated against the exact same list.
+#
+# Fields:
+#   id        : short stable identifier used in output filenames
+#   question  : natural-language query sent to LightRAG
+#   modes     : which LightRAG QueryParam.mode values to run
+#   expects   : free-form notes about the ideal answer shape (for the human
+#               reviewer when filling in the comparison report)
+#
+# Reference queries come directly from claude.md section "3. 질의응답 품질".
+
+queries:
+  - id: q01_x7r_0603
+    question: "온도특성이 X7R 이고 size가 0603 인 제품 목록을 알려줘. 각 제품의 용량과 정격전압을 함께 적어줘."
+    modes: [hybrid, mix]
+    expects: "dielectric code B (X7R), size code 03 (0603 inch / 1608 metric) 조합의 part number list."
+
+  - id: q02_cog_over_4v5
+    question: "전압이 4.5V 이상인 C 특성 (C0G) 기종을 알려줘."
+    modes: [hybrid, mix]
+    expects: "dielectric code C (C0G) AND rated voltage >= 4.5V (codes R=4.0 제외, Q=6.3V, P=10V, ...)."
+
+  - id: q03_capacitance_influencers
+    question: "정전용량 C 가 높아질 때 영향을 받는 인자들을 설명해줘. DC bias, AC voltage, temperature, aging 등의 관점에서."
+    modes: [global, mix]
+    expects: "class II dielectric의 DC bias 감소, AC bias 증가, temperature dependence, aging 관점의 설명."
+
+  - id: q04_exceptions
+    question: "예외 기종(exception) 이 있다면 무엇이며, 그 예외 사항은 무엇인가?"
+    modes: [local, hybrid]
+    expects: "MFC / LSC / Low-ESL 등 특수 제품군과 일반 제품군 대비 제약/특장점."
+
+  - id: q05_high_level2
+    question: "High Level II 신뢰성 기준을 만족하는 제품군과 그 시험 조건을 알려줘."
+    modes: [hybrid, mix]
+    expects: "High Level II 정의, humidity 85C/85%RH/1000h, temperature cycling 1000 cycles 등."
