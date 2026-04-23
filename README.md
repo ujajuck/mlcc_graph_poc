@@ -25,8 +25,12 @@ flowchart TD
 
     PRE --> PROCESSED["data/processed/*.md<br/>+ .tables.json<br/>+ .facts.txt"]
 
-    PROCESSED --> A1["Graphify CLI<br/><code>graphify ./data/processed --update</code>"]
-    PROCESSED --> B1["LightRAG.ainsert"]
+    PROCESSED --> A1["Graphify skill<br/>(host: OpenCode / Aider / Codex)<br/><code>graphify ./data/processed --update</code>"]
+    PROCESSED --> B1["LightRAG.ainsert<br/>(OpenAI-compatible client)"]
+
+    LLM[("로컬 LLM 서버<br/>vLLM / Ollama / LocalAI<br/>OpenAI-compatible")]:::llm
+    A1 -.->|OPENAI_API_BASE,<br/>MODEL, KEY| LLM
+    B1 -.->|LLM_BINDING_HOST| LLM
 
     subgraph PIPE_A["Pipeline A: Graphify → LightRAG"]
         A1 --> A2["output/graphify_to_lightrag/<br/>graphify_raw/graphify-out/graph.json"]
@@ -48,6 +52,7 @@ flowchart TD
     classDef ingest fill:#e8f1ff,stroke:#3b82f6
     classDef storage fill:#fef3c7,stroke:#d97706
     classDef output fill:#dcfce7,stroke:#16a34a
+    classDef llm fill:#fce7f3,stroke:#be185d
     class A1,A3,A5,B1 ingest
     class AGE_A,AGE_B storage
     class REPORT output
@@ -97,25 +102,80 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### 2. Graphify CLI (파이프라인 A만 필요)
+### 2. Graphify (파이프라인 A 전용)
+
+Graphify 는 **여러 coding agent에 설치 가능한 "skill"** 이다 (Claude Code,
+Codex, OpenCode, Aider, Cursor, Gemini, Copilot, VS Code, Droid, Trae, Kiro
+등). 패키지 자체는 HTTP LLM 호출을 하지 않고 — host agent가 자기 자격증명으로
+호출한다. 따라서 **로컬 LLM 서버에 붙이려면 로컬 LLM을 지원하는 host agent**
+(OpenCode, Aider 등)에 스킬을 설치하고 해당 host가 우리 로컬 서버를 바라보도록
+설정한다.
 
 ```bash
-uv tool install graphifyy
-graphify install           # Claude Code 스킬 등록
+pip install graphifyy
 ```
 
-Graphify 는 Claude Code 스킬이므로 Claude 자격증명이 필요하다. 파이프라인
-B 만 돌릴 거면 생략해도 된다.
+그 다음 host 선택 (pipeline A 만 해당):
+
+```bash
+# 옵션 A: OpenCode (OpenAI 호환 local LLM 지원, 권장)
+graphify opencode install
+
+# 옵션 B: Aider
+graphify aider install
+
+# 옵션 C: Codex
+graphify codex install
+```
+
+설치 후 `config/.env` 의 `GRAPHIFY_HOST_AGENT` 를 선택한 host 이름으로 맞춘다
+(`opencode` / `aider` / `codex`). 파이프라인 A 러너가 Graphify 서브프로세스를
+띄울 때 `GRAPHIFY_LLM_BASE_URL` / `GRAPHIFY_LLM_API_KEY` / `GRAPHIFY_LLM_MODEL`
+을 각 host가 읽는 env var (`OPENAI_API_BASE`, `OPENCODE_MODEL` 등) 로 자동
+매핑한다 — `pipeline/graphify_to_lightrag/run_graphify.py` 의
+`_HOST_ENV_BINDINGS` 참조.
+
+> Claude Code 를 host로 쓰는 경우 로컬 LLM 으로 라우팅이 불가하다. 파이프라인
+> B 와 동일한 모델을 공유하려면 OpenCode 나 Aider 를 선택한다.
+
+파이프라인 B 만 돌릴 거면 이 단계 전부 생략해도 된다.
 
 ### 3. 환경 변수
 
 ```bash
-cp config/.env.example config/.env
-# 편집: LLM_BINDING_API_KEY, EMBEDDING_BINDING_API_KEY 등 채우기
+cp config/.env.sample config/.env
+# 또는 make env (자동으로 같은 일을 수행)
+$EDITOR config/.env
 ```
 
-LightRAG 는 OpenAI 호환 엔드포인트를 받으므로 vLLM / Ollama / Azure 도
-`LLM_BINDING_HOST` 로 지정 가능하다.
+`config/.env.sample` 에 모든 변수와 기본값이 있다. 핵심 그룹:
+
+| 그룹 | 주요 변수 | 비고 |
+|---|---|---|
+| AGE / Postgres | `POSTGRES_*` | docker-compose 와 LightRAG 가 공유 |
+| LightRAG 저장소 | `LIGHTRAG_*_STORAGE` | 기본값으로 AGE 사용 |
+| Local LLM (공용) | `LLM_BINDING_HOST`, `LLM_MODEL`, `LLM_BINDING_API_KEY` | vLLM / Ollama / LocalAI 등 OpenAI 호환 엔드포인트 |
+| Local 임베딩 | `EMBEDDING_BINDING_HOST`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | 모델 변경 시 vector 테이블 재생성 필요 (LightRAG 제약) |
+| Graphify | `GRAPHIFY_HOST_AGENT`, `GRAPHIFY_LLM_*`, `GRAPHIFY_MODE` | 파이프라인 A 전용, host agent에 forward |
+| Bridge | `MIN_EDGE_CONFIDENCE` | INFERRED 엣지 drop threshold |
+
+양쪽 파이프라인이 **같은 local LLM 서버**에 붙도록 `LLM_BINDING_HOST` 와
+`GRAPHIFY_LLM_BASE_URL` 을 동일하게 둔다 (기본값이 `${LLM_BINDING_HOST}` 로
+연결돼 있음).
+
+예시 (로컬 vLLM Qwen2.5-32B + bge-m3 임베딩):
+
+```bash
+LLM_BINDING_HOST=http://localhost:8000/v1
+LLM_MODEL=Qwen2.5-32B-Instruct
+LLM_BINDING_API_KEY=sk-local-placeholder
+
+EMBEDDING_BINDING_HOST=http://localhost:8001/v1
+EMBEDDING_MODEL=bge-m3
+EMBEDDING_DIM=1024
+
+GRAPHIFY_HOST_AGENT=opencode
+```
 
 ### 4. Apache AGE 기동
 

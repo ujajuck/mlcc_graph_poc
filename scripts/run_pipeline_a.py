@@ -2,9 +2,10 @@
 
 Assumes:
     - Apache AGE is up:           make age-up
-    - .env is configured:         cp config/.env.example config/.env
+    - .env is configured:         cp config/.env.sample config/.env
     - Preprocess has been run:    make preprocess
-    - Graphify CLI is installed:  uv tool install graphifyy && graphify install
+    - Graphify skill is installed in a host agent that routes to the same
+      local LLM pipeline B uses (see README "Graphify host agent setup").
 """
 from __future__ import annotations
 
