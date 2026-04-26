@@ -4,7 +4,7 @@ ENV_FILE    ?= config/.env
 ENV_SAMPLE  := config/.env.sample
 
 .PHONY: age-up age-down age-logs age-psql \
-        preprocess pipeline-a pipeline-b compare \
+        preprocess pipeline-a pipeline-b pipeline-c compare score \
         install env
 
 # Copy .env.sample to .env the first time. Idempotent.
@@ -39,5 +39,13 @@ pipeline-a: env
 pipeline-b: env
 	python -m scripts.run_pipeline_b
 
+pipeline-c: env
+	python -m scripts.run_pipeline_c load
+
 compare: env
 	python -m scripts.compare.run_compare
+
+score: env
+	python -m scripts.compare.score_answers --answers output/graphify_to_lightrag/answers.json --label A
+	python -m scripts.compare.score_answers --answers output/lightrag_only/answers.json --label B
+	python -m scripts.compare.score_answers --answers output/structured_first/answers.json --label C

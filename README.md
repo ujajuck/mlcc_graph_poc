@@ -1,13 +1,37 @@
 # MLCC Graph POC
 
-MLCC 카탈로그 마크다운 문서를 대상으로 **두 가지 RAG 파이프라인**을 구축하고
-동일 질의셋으로 비교한다. 두 파이프라인 모두 **Apache AGE**(PostgreSQL
-확장)를 그래프 저장소로 공유하며, 각자 다른 workspace 에 격리된다.
+MLCC 카탈로그 마크다운 문서를 대상으로 **세 가지 검색/응답 파이프라인**을
+구축하고 동일 질의셋으로 비교한다. RAG 단독 비교가 아니라 "구조화 데이터
+모델링이 RAG 품질에 어떤 영향을 주는가"를 본다.
 
-- 파이프라인 A: `Graphify → 후처리 → LightRAG(AGE)`
-- 파이프라인 B: `LightRAG(AGE)` 단독
+- 파이프라인 A: `Graphify → 후처리 → LightRAG(AGE)` — KG 보조 RAG (실험용)
+- 파이프라인 B: `LightRAG(AGE)` 단독 — 베이스라인 RAG
+- 파이프라인 C: `구조화 ETL → SQL/Cypher 우선 검색 → LightRAG 설명` — **권장 기준**
 
-세부 목표, 비교 기준, 금지 사항은 `claude.md` 참고.
+핵심 명제는 `docs/data_contract.md` 에 정리되어 있고 평가는
+`config/golden_queries.yaml` + `scripts/compare/score_answers.py` 로
+자동 채점한다. 세부 목표, 비교 기준, 금지 사항은 `claude.md` 참고.
+
+## 왜 세 가지인가
+
+평가 피드백 (2026-04 review) 요약:
+
+1. **Graphify 의존은 host coding agent 환경에 따라 재현성이 낮다**.
+   따라서 Graphify는 "비교 실험용 보조 KG"로 격하한다 (파이프라인 A).
+2. **수치 조건 검색을 LLM에 맡기는 건 가장 잘 틀리는 영역**이다. 전압,
+   size, 온도특성, 예외 기종은 SQL/Cypher 조건식으로 먼저 필터링한다.
+   파이프라인 C가 그 역할을 한다.
+3. **"정답 가능한 구조화 DB"가 진짜 기준선**이다. 자연어 답변의 품질은
+   그 위에서만 의미가 있다. 파이프라인 C는 SQLite 기반 fact store를
+   먼저 구축하고, LightRAG는 설명형 질문/근거 문맥 보강에만 사용한다.
+
+## 평가 자동화
+
+- `config/queries.yaml` — 자연어 질의 (사람이 읽는 기준)
+- `config/golden_queries.yaml` — `must_include` / `must_not_include` /
+  `numeric_conditions` 가 있는 골든셋
+- `scripts/compare/score_answers.py` — `must_include_hit`,
+  `must_not_include_leak`, `num_violations`, `overall_pass` 자동 산출
 
 ---
 
@@ -15,53 +39,42 @@ MLCC 카탈로그 마크다운 문서를 대상으로 **두 가지 RAG 파이프
 
 ```mermaid
 flowchart TD
-    subgraph INPUT["data/raw/*.md"]
-        R1[MLCC 제품사양]
-        R2[MLCC 설계 문서]
-        R3[고객 요청 사양]
-    end
+    INPUT["data/raw/*.md"] --> PRE["pipeline/common/preprocess.py<br/><i>표→fact 문장, section_path/table_id/row_id 부여</i>"]
+    PRE --> PROCESSED["data/processed/*.md<br/>+ .tables.json (with row_ids)<br/>+ .facts.jsonl (with Source)"]
 
-    INPUT --> PRE["scripts/preprocess<br/>pipeline/common/preprocess.py<br/><i>표→fact 문장, 단위 정규화</i>"]
+    PROCESSED --> A1["Graphify skill<br/>(host: OpenCode/Aider/Codex)"]
+    PROCESSED --> B1["LightRAG.ainsert"]
+    PROCESSED --> C1["pipeline/structured_first/loader.py<br/><i>scope_for_row → Pydantic Spec 모델</i>"]
 
-    PRE --> PROCESSED["data/processed/*.md<br/>+ .tables.json<br/>+ .facts.txt"]
+    LLM[("로컬 LLM 서버<br/>OpenAI-compatible")]:::llm
+    A1 -.-> LLM
+    B1 -.-> LLM
 
-    PROCESSED --> A1["Graphify skill<br/>(host: OpenCode / Aider / Codex)<br/><code>graphify ./data/processed --update</code>"]
-    PROCESSED --> B1["LightRAG.ainsert<br/>(OpenAI-compatible client)"]
+    A1 --> A2["graph.json"] --> A3["bridge.py<br/><i>relation allow-list,<br/>provenance 합류</i>"] --> A4["custom_kg.json"] --> A5["LightRAG.insert_custom_kg"]
+    A5 --> AGE_A[("AGE workspace<br/>mlcc_graphify_to_lightrag")]
+    B1 --> AGE_B[("AGE workspace<br/>mlcc_lightrag_only")]
+    C1 --> STORE[("SQLite fact_store<br/>products / specs / exceptions /<br/>test_conditions")]
 
-    LLM[("로컬 LLM 서버<br/>vLLM / Ollama / LocalAI<br/>OpenAI-compatible")]:::llm
-    A1 -.->|OPENAI_API_BASE,<br/>MODEL, KEY| LLM
-    B1 -.->|LLM_BINDING_HOST| LLM
+    Q["question"] --> ROUTER["query_router.py<br/><i>condition / explanation / mixed</i>"]
+    ROUTER -->|condition| C2["sql_cypher_retriever<br/>SQL on STORE"]
+    ROUTER -->|explanation| B1Q["LightRAG.aquery (B)"]
+    ROUTER -->|mixed| C2 --> C3["LightRAG.aquery<br/>with grounded prompt"]
 
-    subgraph PIPE_A["Pipeline A: Graphify → LightRAG"]
-        A1 --> A2["output/graphify_to_lightrag/<br/>graphify_raw/graphify-out/graph.json"]
-        A2 --> A3["pipeline/graphify_to_lightrag/bridge.py<br/><i>엔티티 canonicalize,<br/>AMBIGUOUS 드롭,<br/>triple 문장화</i>"]
-        A3 --> A4["output/graphify_to_lightrag/<br/>custom_kg.json"]
-        A4 --> A5["LightRAG.insert_custom_kg"]
-    end
-
-    subgraph PIPE_B["Pipeline B: LightRAG only"]
-        B1
-    end
-
-    A5 --> AGE_A[("Apache AGE<br/>workspace =<br/>mlcc_graphify_to_lightrag")]
-    B1 --> AGE_B[("Apache AGE<br/>workspace =<br/>mlcc_lightrag_only")]
-
-    AGE_A & AGE_B --> CMP["scripts/compare/run_compare<br/><i>config/queries.yaml 의<br/>동일 질의를 양쪽에 실행</i>"]
-    CMP --> REPORT["output/comparison/<br/>comparison_report.md"]
+    AGE_A & AGE_B & STORE --> CMP["run_compare → answers.json"] --> SCORE["score_answers<br/>vs golden_queries.yaml"] --> REPORT["comparison_report.md<br/>+ score_{A,B,C}.json"]
 
     classDef ingest fill:#e8f1ff,stroke:#3b82f6
     classDef storage fill:#fef3c7,stroke:#d97706
     classDef output fill:#dcfce7,stroke:#16a34a
     classDef llm fill:#fce7f3,stroke:#be185d
-    class A1,A3,A5,B1 ingest
-    class AGE_A,AGE_B storage
-    class REPORT output
+    class A1,A3,A5,B1,C1,ROUTER ingest
+    class AGE_A,AGE_B,STORE storage
+    class REPORT,SCORE output
 ```
 
 핵심 포인트:
-- **전처리는 공통** — 두 파이프라인의 입력이 bit-for-bit 동일해야 비교가 공정하다.
-- **AGE 인스턴스는 하나**, workspace 로만 분리 — `docker compose up` 한 번으로 양쪽 실험 동시 실행 가능.
-- LightRAG `PGGraphStorage` 가 AGE 그래프명을 `POSTGRES_WORKSPACE` 에서 파생한다.
+- **전처리는 공통** — 세 파이프라인의 입력이 bit-for-bit 동일해야 비교가 공정하다.
+- **AGE 인스턴스는 하나**, workspace 로만 분리 — `docker compose up` 한 번으로 동시 실행.
+- **C는 별도 ingest 가 가볍다** — SQLite 파일 하나(`output/fact_store.sqlite`)만 만들고, 설명형 질문은 B의 KG를 재사용한다.
 
 ---
 
@@ -70,25 +83,45 @@ flowchart TD
 ```
 data/
   raw/                        # 원본 .md 입력
-  processed/                  # 전처리 산출물 (두 파이프라인 공통 입력)
+  processed/                  # 전처리 산출물 (세 파이프라인 공통 입력)
+schema/
+  spec_schema.py              # Product / Spec / Exception_ / TestCondition (Pydantic)
 pipeline/
-  common/                     # 전처리, 정규화, AGE 클라이언트, LightRAG 부트스트랩
-  graphify_to_lightrag/       # Graphify 실행 + graph.json → custom_kg 브리지
-  lightrag_only/              # 전처리 md → LightRAG ainsert
+  common/
+    preprocess.py             # md → tables.json + facts.jsonl + cleaned md
+    normalize.py              # 단위/표기 정규화
+    extract_product_scope.py  # 행 → product_id / family_id / 코드북 분류
+    fact_store.py             # SQLite 캐노니컬 fact 저장소 (Pydantic 입력)
+    query_router.py           # 자연어 → condition / explanation / mixed
+    sql_cypher_retriever.py   # 결정적 검색 (SQL + AGE Cypher)
+    age_client.py
+    lightrag_bootstrap.py
+  graphify_to_lightrag/       # 파이프라인 A: Graphify → bridge → LightRAG
+  lightrag_only/              # 파이프라인 B: 전처리 md → LightRAG ainsert
+  structured_first/           # 파이프라인 C: SQL/Cypher 우선 + LightRAG 설명
 output/
-  graphify_to_lightrag/       # 파이프라인 A 산출물 (custom_kg.json, rag_state/, answers.json)
+  fact_store.sqlite           # 파이프라인 C의 source-of-truth
+  graphify_to_lightrag/       # 파이프라인 A 산출물
   lightrag_only/              # 파이프라인 B 산출물
-  comparison/                 # comparison_report.md
+  structured_first/           # 파이프라인 C 산출물
+  comparison/                 # comparison_report.md, score_{A,B,C}.json
 scripts/
-  preprocess/                 # 공통 전처리 실행기
-  compare/                    # 비교 실행기
-  run_pipeline_a.py           # 파이프라인 A 러너
-  run_pipeline_b.py           # 파이프라인 B 러너
+  preprocess/                 # 공통 전처리
+  compare/
+    run_compare.py            # 세 파이프라인 답변 수집
+    score_answers.py          # golden_queries.yaml 자동 채점
+  run_pipeline_a.py
+  run_pipeline_b.py
+  run_pipeline_c.py           # = fact_store load
 docker/docker-compose.yml     # Apache AGE 컨테이너
-sql/init_age.sql              # AGE 확장 로드 + 기본 graph 생성
+sql/init_age.sql              # AGE 확장 로드 + 기본 graph
+sql/init_pgvector.sql         # pgvector 가 있으면 활성화 (없으면 skip)
 config/
-  .env.example                # 환경 변수 템플릿
-  queries.yaml                # 공통 질의셋
+  .env.sample
+  queries.yaml                # 자연어 질의 (사람용)
+  golden_queries.yaml         # 자동 채점용 골든셋
+docs/
+  data_contract.md            # ID/단위/aliases/provenance 규칙
 ```
 
 ---
@@ -199,20 +232,32 @@ make age-psql           # psql 세션 (LOAD 'age' 수동 필요)
 ## 실행 순서
 
 ```bash
-make preprocess         # data/raw → data/processed
-make pipeline-a         # Graphify → custom_kg → AGE workspace A
+make preprocess         # data/raw → data/processed (tables.json + facts.jsonl)
+make pipeline-c         # data/processed → output/fact_store.sqlite (canonical facts)
+make pipeline-a         # Graphify → custom_kg → AGE workspace A (선택)
 make pipeline-b         # 전처리 md → AGE workspace B
-make compare            # 양쪽 질의 실행 + comparison_report.md 생성
+make compare            # 세 파이프라인 질의 실행 + comparison_report.md
+make score              # golden_queries.yaml 기반 자동 채점
 ```
 
 각 단계 산출물:
 
 | 단계 | 산출물 |
 |---|---|
-| preprocess | `data/processed/*.md`, `*.tables.json`, `*.facts.txt` |
-| pipeline A | `output/graphify_to_lightrag/graphify_raw/graphify-out/graph.json`, `custom_kg.json`, `rag_state/` |
+| preprocess | `data/processed/*.md`, `*.tables.json` (with row_ids), `*.facts.txt`, `*.facts.jsonl` |
+| pipeline A | `graphify_raw/graphify-out/graph.json`, `custom_kg.json`, `custom_kg.stats.json`, `rag_state/` |
 | pipeline B | `output/lightrag_only/rag_state/` |
-| compare   | `output/{graphify_to_lightrag,lightrag_only}/answers.json`, `output/comparison/comparison_report.md` |
+| pipeline C | `output/fact_store.sqlite` |
+| compare   | `output/{graphify_to_lightrag,lightrag_only,structured_first}/answers.json`, `output/comparison/comparison_report.md` |
+| score     | `output/comparison/score_{A,B,C}.json` |
+
+`make compare` 의 파이프라인 부분 집합만 돌리려면:
+
+```bash
+python -m scripts.compare.run_compare --pipelines B,C
+```
+
+(예를 들어 Graphify host agent가 없을 때.)
 
 ---
 
@@ -336,10 +381,26 @@ SELECT * FROM cypher('mlcc_lightrag_only',
 
 ---
 
-## 구현 원칙 리마인더 (claude.md 요약)
+## 구현 원칙 리마인더 (claude.md + 2026-04 review)
 
-1. 두 파이프라인은 **동일 전처리**를 사용한다.
+1. 세 파이프라인은 **동일 전처리**를 사용한다.
 2. Markdown 표는 **코드로 파싱**해서 fact 문장으로만 LLM에 노출한다.
-3. 단위/숫자 비교는 `pipeline/common/normalize.py` 에서 결정적으로 수행한다.
-4. Graphify 결과는 **반드시 후처리**하여 LightRAG 에 들어간다.
-5. 완벽한 최종 구조보다 **공정한 비교 실험**을 우선한다.
+3. **수치/단위 비교는 LLM에 위임하지 않는다.** 전압 ≥ 4.5V 같은 조건은
+   `pipeline/common/sql_cypher_retriever.py` 가 SQL로 수행한다.
+4. **모든 fact 는 `Source` (source_doc, section_path, table_id, row_id) 를
+   가진다.** 출처 없는 fact는 fact store에 들어가지 않는다.
+5. Graphify 결과는 **반드시 후처리**되며, relation type allow-list 를
+   통과하지 못한 엣지는 'OTHER' 로 표시된다.
+6. **Graphify는 비교 실험용 보조 KG 다.** 정답 기준선은 파이프라인 C
+   (구조화 fact store) 다.
+7. 완벽한 최종 구조보다 **공정한 비교 실험과 자동 채점**을 우선한다.
+
+## 알려진 제약 / 환경 주의사항
+
+- 기본 docker 이미지(`apache/age:PG16_latest`)는 pgvector를 포함하지 않는다.
+  `.env.sample` 의 `LIGHTRAG_VECTOR_STORAGE` 기본값은
+  `NanoVectorDBStorage` (파일 기반). pgvector + AGE를 같이 쓰려면 별도
+  이미지를 빌드한 뒤 `LIGHTRAG_VECTOR_STORAGE=PGVectorStorage` 로 바꾼다.
+- Graphify는 host coding agent (OpenCode/Aider/Codex) 환경 변수에 의존하므로
+  실험 재현성이 낮다. 가능하면 파이프라인 C를 기준선으로 삼고 A는 옵셔널
+  비교로만 쓴다.
