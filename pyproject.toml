@@ -1,0 +1,33 @@
+[project]
+name = "mlcc-graph-poc"
+version = "0.1.0"
+description = "Comparative experiment: Graphify -> LightRAG vs LightRAG-only on MLCC catalog docs, backed by Apache AGE."
+requires-python = ">=3.11"
+
+dependencies = [
+    # LightRAG + its PostgreSQL/AGE backend.
+    "lightrag-hku>=1.3.0",
+    "asyncpg>=0.29",
+    "psycopg[binary]>=3.1",
+    # Markdown + table parsing for the shared preprocessor.
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
+    "pandas>=2.2",
+    # Config + runner plumbing.
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "tenacity>=8.2",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.40"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pipeline*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

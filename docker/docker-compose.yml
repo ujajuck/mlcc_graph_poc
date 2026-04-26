@@ -1,0 +1,22 @@
+services:
+  age:
+    image: apache/age:PG16_latest
+    container_name: mlcc_age
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lightrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lightrag}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-lightrag_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - age_data:/var/lib/postgresql/data
+      - ../sql/init_age.sql:/docker-entrypoint-initdb.d/10_init_age.sql:ro
+      - ../sql/init_pgvector.sql:/docker-entrypoint-initdb.d/20_init_pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightrag} -d ${POSTGRES_DATABASE:-lightrag_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  age_data:
