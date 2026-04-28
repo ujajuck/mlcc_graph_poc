@@ -1,11 +1,14 @@
-"""Pipeline A: Graphify -> postprocess -> LightRAG-on-AGE.
+"""Pipeline A: LiteLLM-based KG extraction → postprocess → LightRAG-on-AGE.
 
 Steps, matching claude.md section A:
     A-1  preprocess markdown (shared, handled by scripts/preprocess)
-    A-2  run Graphify on the preprocessed dir
+    A-2  run our own LLM-driven KG extractor (LiteLLM → local Ollama/vLLM)
     A-3  normalize entity names / units in graph.json
     A-4  build a LightRAG custom_kg payload
     A-5  insert_custom_kg into the AGE-backed workspace
+
+The legacy host-agent dispatch (OpenCode/Aider/Codex) has been removed; see
+`pipeline/graphify_to_lightrag/kg_extractor.py` for the replacement.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from pathlib import Path
 
 from pipeline.common.lightrag_bootstrap import build_rag
 from pipeline.graphify_to_lightrag.bridge import build_custom_kg, load_graph, write_custom_kg
-from pipeline.graphify_to_lightrag.run_graphify import run_graphify
+from pipeline.graphify_to_lightrag.kg_extractor import extract
 
 
 WORKSPACE = "mlcc_graphify_to_lightrag"
@@ -24,9 +27,9 @@ WORKSPACE = "mlcc_graphify_to_lightrag"
 async def ingest(processed_dir: Path, working_dir: Path, out_dir: Path) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    graphify_cwd = Path(os.environ.get("GRAPHIFY_OUT_DIR", out_dir / "graphify_raw"))
-    graphify_cwd.mkdir(parents=True, exist_ok=True)
-    graph_json = run_graphify(processed_dir, graphify_cwd)
+    extract_root = Path(os.environ.get("GRAPHIFY_OUT_DIR", out_dir / "graphify_raw"))
+    extract_root.mkdir(parents=True, exist_ok=True)
+    graph_json = await extract(processed_dir, extract_root)
 
     graph = load_graph(graph_json)
     kg = build_custom_kg(

@@ -4,9 +4,12 @@ MLCC 카탈로그 마크다운 문서를 대상으로 **세 가지 검색/응답
 구축하고 동일 질의셋으로 비교한다. RAG 단독 비교가 아니라 "구조화 데이터
 모델링이 RAG 품질에 어떤 영향을 주는가"를 본다.
 
-- 파이프라인 A: `Graphify → 후처리 → LightRAG(AGE)` — KG 보조 RAG (실험용)
+- 파이프라인 A: `LiteLLM KG 추출기 → 후처리 → LightRAG(AGE)` — KG 보조 RAG (실험용)
 - 파이프라인 B: `LightRAG(AGE)` 단독 — 베이스라인 RAG
 - 파이프라인 C: `구조화 ETL → SQL/Cypher 우선 검색 → LightRAG 설명` — **권장 기준**
+
+LLM 호출은 전부 **LiteLLM** 한 곳을 거쳐 로컬 **Ollama / vLLM** 으로 간다.
+OpenCode/Aider/Codex 같은 host coding agent 는 더 이상 필요하지 않다.
 
 핵심 명제는 `docs/data_contract.md` 에 정리되어 있고 평가는
 `config/golden_queries.yaml` + `scripts/compare/score_answers.py` 로
@@ -16,8 +19,9 @@ MLCC 카탈로그 마크다운 문서를 대상으로 **세 가지 검색/응답
 
 평가 피드백 (2026-04 review) 요약:
 
-1. **Graphify 의존은 host coding agent 환경에 따라 재현성이 낮다**.
-   따라서 Graphify는 "비교 실험용 보조 KG"로 격하한다 (파이프라인 A).
+1. **LLM 기반 KG 추출은 모델 변경에 따라 결과가 달라진다**. 따라서 파이프라인
+   A 는 "비교 실험용 보조 KG" 로 위치를 잡고, 추출기는 LiteLLM 으로 로컬
+   Ollama/vLLM 에 직접 붙어 host coding agent 의존을 없앴다.
 2. **수치 조건 검색을 LLM에 맡기는 건 가장 잘 틀리는 영역**이다. 전압,
    size, 온도특성, 예외 기종은 SQL/Cypher 조건식으로 먼저 필터링한다.
    파이프라인 C가 그 역할을 한다.
@@ -42,11 +46,11 @@ flowchart TD
     INPUT["data/raw/*.md"] --> PRE["pipeline/common/preprocess.py<br/><i>표→fact 문장, section_path/table_id/row_id 부여</i>"]
     PRE --> PROCESSED["data/processed/*.md<br/>+ .tables.json (with row_ids)<br/>+ .facts.jsonl (with Source)"]
 
-    PROCESSED --> A1["Graphify skill<br/>(host: OpenCode/Aider/Codex)"]
+    PROCESSED --> A1["kg_extractor.py<br/>(LiteLLM → Ollama/vLLM)"]
     PROCESSED --> B1["LightRAG.ainsert"]
     PROCESSED --> C1["pipeline/structured_first/loader.py<br/><i>scope_for_row → Pydantic Spec 모델</i>"]
 
-    LLM[("로컬 LLM 서버<br/>OpenAI-compatible")]:::llm
+    LLM[("로컬 LLM 서버<br/>Ollama / vLLM<br/>(LiteLLM 클라이언트로 통합)")]:::llm
     A1 -.-> LLM
     B1 -.-> LLM
 
@@ -135,43 +139,24 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### 2. Graphify (파이프라인 A 전용)
+### 2. 로컬 LLM 연결 (LiteLLM → Ollama / vLLM)
 
-Graphify 는 **여러 coding agent에 설치 가능한 "skill"** 이다 (Claude Code,
-Codex, OpenCode, Aider, Cursor, Gemini, Copilot, VS Code, Droid, Trae, Kiro
-등). 패키지 자체는 HTTP LLM 호출을 하지 않고 — host agent가 자기 자격증명으로
-호출한다. 따라서 **로컬 LLM 서버에 붙이려면 로컬 LLM을 지원하는 host agent**
-(OpenCode, Aider 등)에 스킬을 설치하고 해당 host가 우리 로컬 서버를 바라보도록
-설정한다.
+세 파이프라인 모두 LLM 호출은 **LiteLLM** 한 곳을 거친다. OpenCode/Aider/
+Codex 같은 host coding agent 의존은 제거됐다. LiteLLM 모델 문자열만 맞춰
+주면 Ollama/vLLM/LocalAI/LiteLLM 프록시 어디든 같은 코드로 붙는다.
 
-```bash
-pip install graphifyy
-```
+| 백엔드 | `LLM_MODEL` 예시 | `LLM_BINDING_HOST` |
+|---|---|---|
+| Ollama | `ollama/llama3:70b` | `http://localhost:11434` |
+| vLLM (OpenAI 호환) | `openai/Qwen2.5-32B-Instruct` | `http://localhost:8000/v1` |
+| LiteLLM proxy | `openai/<alias>` | `http://localhost:4000` |
 
-그 다음 host 선택 (pipeline A 만 해당):
+임베딩도 같은 규칙. Ollama 의 경우 `ollama/bge-m3`, vLLM/TEI 의 경우
+`openai/bge-m3` + base_url. 모델의 실제 출력 차원을 `EMBEDDING_DIM` 에
+정확히 맞춰야 한다 (LightRAG 제약 — 변경 시 vector 테이블 재생성 필요).
 
-```bash
-# 옵션 A: OpenCode (OpenAI 호환 local LLM 지원, 권장)
-graphify opencode install
-
-# 옵션 B: Aider
-graphify aider install
-
-# 옵션 C: Codex
-graphify codex install
-```
-
-설치 후 `config/.env` 의 `GRAPHIFY_HOST_AGENT` 를 선택한 host 이름으로 맞춘다
-(`opencode` / `aider` / `codex`). 파이프라인 A 러너가 Graphify 서브프로세스를
-띄울 때 `GRAPHIFY_LLM_BASE_URL` / `GRAPHIFY_LLM_API_KEY` / `GRAPHIFY_LLM_MODEL`
-을 각 host가 읽는 env var (`OPENAI_API_BASE`, `OPENCODE_MODEL` 등) 로 자동
-매핑한다 — `pipeline/graphify_to_lightrag/run_graphify.py` 의
-`_HOST_ENV_BINDINGS` 참조.
-
-> Claude Code 를 host로 쓰는 경우 로컬 LLM 으로 라우팅이 불가하다. 파이프라인
-> B 와 동일한 모델을 공유하려면 OpenCode 나 Aider 를 선택한다.
-
-파이프라인 B 만 돌릴 거면 이 단계 전부 생략해도 된다.
+파이프라인 A 의 KG 추출도 같은 LLM 을 쓴다 (`pipeline/graphify_to_lightrag/
+kg_extractor.py`). 호스트 agent 설치는 더 이상 필요 없다.
 
 ### 3. 환경 변수
 
@@ -186,28 +171,32 @@ $EDITOR config/.env
 | 그룹 | 주요 변수 | 비고 |
 |---|---|---|
 | AGE / Postgres | `POSTGRES_*` | docker-compose 와 LightRAG 가 공유 |
-| LightRAG 저장소 | `LIGHTRAG_*_STORAGE` | 기본값으로 AGE 사용 |
-| Local LLM (공용) | `LLM_BINDING_HOST`, `LLM_MODEL`, `LLM_BINDING_API_KEY` | vLLM / Ollama / LocalAI 등 OpenAI 호환 엔드포인트 |
-| Local 임베딩 | `EMBEDDING_BINDING_HOST`, `EMBEDDING_MODEL`, `EMBEDDING_DIM` | 모델 변경 시 vector 테이블 재생성 필요 (LightRAG 제약) |
-| Graphify | `GRAPHIFY_HOST_AGENT`, `GRAPHIFY_LLM_*`, `GRAPHIFY_MODE` | 파이프라인 A 전용, host agent에 forward |
-| Bridge | `MIN_EDGE_CONFIDENCE` | INFERRED 엣지 drop threshold |
+| LightRAG 저장소 | `LIGHTRAG_*_STORAGE` | 기본값으로 AGE + NanoVectorDB |
+| LLM (LiteLLM) | `LLM_MODEL`, `LLM_BINDING_HOST`, `LLM_BINDING_API_KEY`, `LLM_TIMEOUT` | Ollama / vLLM / LiteLLM 프록시 모두 동일 |
+| 임베딩 (LiteLLM) | `EMBEDDING_MODEL`, `EMBEDDING_BINDING_HOST`, `EMBEDDING_DIM` | 모델 변경 시 vector 테이블 재생성 필요 |
+| KG 추출 | `KG_BATCH_SIZE`, `KG_MAX_CONCURRENCY`, `GRAPHIFY_OUT_DIR` | 파이프라인 A 의 LLM 기반 추출기 튜닝 |
+| Bridge | `MIN_EDGE_CONFIDENCE` | 저신뢰 엣지 drop threshold |
 
-양쪽 파이프라인이 **같은 local LLM 서버**에 붙도록 `LLM_BINDING_HOST` 와
-`GRAPHIFY_LLM_BASE_URL` 을 동일하게 둔다 (기본값이 `${LLM_BINDING_HOST}` 로
-연결돼 있음).
-
-예시 (로컬 vLLM Qwen2.5-32B + bge-m3 임베딩):
+예시 — 로컬 vLLM (Qwen2.5-32B) + Ollama 임베딩 (bge-m3):
 
 ```bash
+LLM_MODEL=openai/Qwen2.5-32B-Instruct
 LLM_BINDING_HOST=http://localhost:8000/v1
-LLM_MODEL=Qwen2.5-32B-Instruct
 LLM_BINDING_API_KEY=sk-local-placeholder
 
-EMBEDDING_BINDING_HOST=http://localhost:8001/v1
-EMBEDDING_MODEL=bge-m3
+EMBEDDING_MODEL=ollama/bge-m3
+EMBEDDING_BINDING_HOST=http://localhost:11434
 EMBEDDING_DIM=1024
+```
 
-GRAPHIFY_HOST_AGENT=opencode
+예시 — 모두 Ollama:
+
+```bash
+LLM_MODEL=ollama/llama3:70b
+LLM_BINDING_HOST=http://localhost:11434
+EMBEDDING_MODEL=ollama/bge-m3
+EMBEDDING_BINDING_HOST=http://localhost:11434
+EMBEDDING_DIM=1024
 ```
 
 ### 4. Apache AGE 기동
@@ -257,7 +246,7 @@ make score              # golden_queries.yaml 기반 자동 채점
 python -m scripts.compare.run_compare --pipelines B,C
 ```
 
-(예를 들어 Graphify host agent가 없을 때.)
+(예를 들어 KG 추출기에 시간을 쓰고 싶지 않을 때 A를 빼고 B,C 만 비교.)
 
 ---
 
@@ -299,11 +288,12 @@ make pipeline-b
 (`pipeline/lightrag_only/runner.py` 에 아직 래퍼 없음 — 필요 시 추가).
 워크스페이스 전체를 초기화하려면 아래 "초기화" 절 참고.
 
-**파이프라인 A (Graphify → LightRAG)**
+**파이프라인 A (LiteLLM KG 추출기 → LightRAG)**
 
-Graphify 는 `--update` 로 변경된 파일만 다시 추출하여 기존 graph.json 에
-머지한다 (Graphify README 기준). 본 프로젝트 기본 호출이 이미 `--update`
-이므로 그대로 실행하면 된다.
+`pipeline/graphify_to_lightrag/kg_extractor.py` 가 매 실행마다 `*.facts.jsonl`
+전체를 batch 로 LLM 에 보내 새 `graph.json` 을 만든다. 증분 캐시는 아직
+없으므로 큰 코퍼스에서는 `KG_BATCH_SIZE` / `KG_MAX_CONCURRENCY` 를 모델
+처리량에 맞게 올린다.
 
 ```bash
 make pipeline-a
@@ -344,13 +334,14 @@ make age-up
 
 이후 `preprocess → pipeline-a → pipeline-b → compare` 다시.
 
-### 케이스 4 — Graphify 쪽만 캐시 비우고 재추출
+### 케이스 4 — KG 추출기 출력만 비우고 재추출
 
-Graphify 는 `graphify-out/cache/` SHA256 캐시를 유지한다. 프롬프트/모델을
-바꾼 뒤 전부 다시 추출하려면 해당 디렉터리를 삭제한다:
+LLM 프롬프트나 모델을 바꾼 뒤 KG 를 다시 만들고 싶다면 추출 결과만 지우고
+다시 돌리면 된다 (LightRAG workspace 는 살아 있으면 alias 머지가 일어나므로
+필요시 케이스 3 를 같이 수행).
 
 ```bash
-rm -rf output/graphify_to_lightrag/graphify_raw/graphify-out/cache
+rm -rf output/graphify_to_lightrag/graphify_raw/graphify-out
 make pipeline-a
 ```
 
@@ -389,11 +380,13 @@ SELECT * FROM cypher('mlcc_lightrag_only',
    `pipeline/common/sql_cypher_retriever.py` 가 SQL로 수행한다.
 4. **모든 fact 는 `Source` (source_doc, section_path, table_id, row_id) 를
    가진다.** 출처 없는 fact는 fact store에 들어가지 않는다.
-5. Graphify 결과는 **반드시 후처리**되며, relation type allow-list 를
+5. KG 추출기는 **로컬 Ollama / vLLM 에 LiteLLM 으로 직접** 붙는다.
+   OpenCode/Aider/Codex 같은 host coding agent 의존은 없다.
+6. KG 추출 결과는 **반드시 bridge 로 후처리**되며, relation type allow-list 를
    통과하지 못한 엣지는 'OTHER' 로 표시된다.
-6. **Graphify는 비교 실험용 보조 KG 다.** 정답 기준선은 파이프라인 C
+7. **파이프라인 A 는 비교 실험용 보조 KG 다.** 정답 기준선은 파이프라인 C
    (구조화 fact store) 다.
-7. 완벽한 최종 구조보다 **공정한 비교 실험과 자동 채점**을 우선한다.
+8. 완벽한 최종 구조보다 **공정한 비교 실험과 자동 채점**을 우선한다.
 
 ## 알려진 제약 / 환경 주의사항
 
@@ -401,6 +394,7 @@ SELECT * FROM cypher('mlcc_lightrag_only',
   `.env.sample` 의 `LIGHTRAG_VECTOR_STORAGE` 기본값은
   `NanoVectorDBStorage` (파일 기반). pgvector + AGE를 같이 쓰려면 별도
   이미지를 빌드한 뒤 `LIGHTRAG_VECTOR_STORAGE=PGVectorStorage` 로 바꾼다.
-- Graphify는 host coding agent (OpenCode/Aider/Codex) 환경 변수에 의존하므로
-  실험 재현성이 낮다. 가능하면 파이프라인 C를 기준선으로 삼고 A는 옵셔널
-  비교로만 쓴다.
+- 파이프라인 A 의 KG 는 LLM 출력에 의존하므로 모델 변경 시 결과가 변한다.
+  비교 결과를 보고할 때는 항상 `output/graphify_to_lightrag/graphify_raw/
+  graphify-out/extract_stats.json` (모델, batch 수, 노드/엣지 수) 도 함께
+  남긴다.

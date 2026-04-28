@@ -21,6 +21,10 @@ dependencies = [
     "rich>=13.7",
     # Canonical fact schema (schema/spec_schema.py).
     "pydantic>=2.6",
+    # Unified LLM client for local Ollama / vLLM (replaces host-agent-based
+    # Graphify dispatch). Handles ollama/* and openai/* model strings.
+    "litellm>=1.40",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
