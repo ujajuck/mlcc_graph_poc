@@ -1,0 +1,98 @@
+# Golden evaluation set used by scripts/compare/score_answers.py.
+#
+# Each entry adds machine-checkable expectations on top of the human-readable
+# `expects` field already in queries.yaml. Pipelines under test produce a free
+# text answer; the scorer converts both the answer and the expectation into
+# token sets and reports:
+#   - precision  = |answer ∩ must_include| / |must_include|
+#   - leakage    = how many `must_not_include` items appear in the answer
+#   - num_violations = how many numeric_conditions the answer violates
+#
+# Fields:
+#   id                  matches queries.yaml
+#   expected_products   list of product_ids/part_numbers that should appear
+#   must_include        substrings that should appear (case-insensitive)
+#   must_not_include    substrings that must NOT appear
+#   numeric_conditions  list of {field, op, value} that filter expected hits
+#
+# Keep this file deterministic. Adding a new query? Add the gold entry in the
+# same PR — never let the test set drift behind queries.yaml.
+
+queries:
+  - id: q01_x7r_0603
+    must_include:
+      - "X7R"
+      - "0603"
+    must_not_include:
+      - "X5R only"
+      - "C0G only"
+    numeric_conditions: []
+    notes: |
+      Expected behavior: list part numbers whose dielectric_eia='X7R' AND
+      size_inch='0603'. Pipeline C should return SQL hits; A/B should at
+      least surface 'X7R' and '0603' tokens.
+
+  - id: q02_cog_over_4v5
+    must_include:
+      - "C0G"
+    must_not_include:
+      - "2.5Vdc"   # rated_voltage_v < 4.5
+      - "4.0Vdc"   # rated_voltage_v < 4.5  (code R)
+    numeric_conditions:
+      - field: rated_voltage_v
+        op: ">="
+        value: 4.5
+      - field: dielectric_eia
+        op: "="
+        value: "C0G"
+    notes: |
+      The classic 'voltage filter' query. Pipeline C MUST execute this as
+      SQL. Pipelines A and B are very likely to hallucinate by including
+      4.0V parts because the LLM sees both 4.0V and 4.5V mentions in
+      neighboring chunks.
+
+  - id: q03_capacitance_influencers
+    must_include:
+      - "DC bias"
+      - "temperature"
+    must_not_include: []
+    numeric_conditions: []
+    notes: |
+      Pure explanation question. Pipeline C should defer entirely to
+      LightRAG. Used to establish a baseline that condition-first routing
+      does not regress explanation quality.
+
+  - id: q04_exceptions
+    must_include:
+      - "MFC"
+      - "LSC"
+    must_not_include: []
+    numeric_conditions: []
+    notes: |
+      Tests exception/family lookup. Pipeline C answers with rows from
+      exceptions table joined to product families.
+
+  - id: q05_high_level2
+    must_include:
+      - "85"      # 85C
+      - "1000h"
+      - "1000 cycles"
+    must_not_include:
+      - "5 cycles"   # standard, not High Level II
+      - "500h"       # standard / HL1
+    numeric_conditions:
+      - field: temperature_c
+        op: "="
+        value: 85
+      - field: humidity_pct_rh
+        op: "="
+        value: 85
+      - field: duration_h
+        op: "="
+        value: 1000
+      - field: cycles
+        op: "="
+        value: 1000
+    notes: |
+      High Level II has a tight numeric signature. Cross-contamination with
+      Standard / HL1 numbers is the failure mode we are guarding against.
